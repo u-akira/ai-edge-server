@@ -4,6 +4,12 @@ M5Stack CoreS3などの小型デバイスからテキストを受け取り、Doj
 
 音声認識、音声合成、WebSocket、MQTT、データベース、ローカルLLMはまだ使用しません。
 
+## 認証設計
+
+採用したデバイス単位の認証方針は [ADR-0001](docs/adr/0001-device-authentication.md) に記録しています。
+
+ただし、現行のPoC実装はまだ全デバイス共通の`DEVICE_SHARED_TOKEN`方式です。ADRの方式へ移行するまでは、公開運用ではなく検証用途に限定し、HTTPSと共有トークンを必ず使用してください。
+
 ## システム構成
 
 ```text
