@@ -1,6 +1,6 @@
 # ai-edge-server
 
-M5Stack CoreS3などの小型デバイスからテキストを受け取り、DojoPaaS上の軽量なFastAPIサーバーを経由してOpenAI APIへ問い合わせる最小PoCです。
+M5Stack CoreS3などの小型デバイスからテキストを受け取り、DojoPaaS上の軽量なFastAPIサーバーを経由してGoogle AI StudioのGemini APIへ問い合わせる最小PoCです。
 
 音声認識、音声合成、WebSocket、MQTT、データベース、ローカルLLMはまだ使用しません。
 
@@ -17,14 +17,14 @@ M5Stack CoreS3
     │ HTTP/HTTPS + JSON
     ▼
 DojoPaaS: FastAPI + Uvicorn
-    │ OpenAI Python SDK + HTTPS
+    │ Google Gen AI Python SDK + HTTPS
     ▼
-OpenAI API
+Google AI Studio (Gemini API)
     │ JSON response
     └──────────────► DojoPaaS ──► CoreS3
 ```
 
-`OPENAI_API_KEY`はDojoPaaSにだけ置き、CoreS3には保存しません。
+`GEMINI_API_KEY`はDojoPaaSにだけ置き、CoreS3には保存しません。
 
 ## サーバー構成概要
 
@@ -35,18 +35,18 @@ flowchart LR
     proxy["Nginx / TLS終端<br/>80 / 443"]
     app["Uvicorn<br/>127.0.0.1:8000"]
     fastapi["FastAPI<br/>/health<br/>/api/chat"]
-    env["server/.env<br/>OPENAI_API_KEY<br/>OPENAI_MODEL<br/>DEVICE_SHARED_TOKEN"]
-    sdk["OpenAI Python SDK"]
-    openai["OpenAI API"]
+    env["server/.env<br/>GEMINI_API_KEY<br/>GEMINI_MODEL<br/>DEVICE_SHARED_TOKEN"]
+    sdk["Google Gen AI Python SDK"]
+    gemini["Google AI Studio<br/>(Gemini API)"]
 
     device --> edge --> proxy --> app --> fastapi
     env -.->|設定を読み込む| fastapi
-    fastapi --> sdk --> openai
-    openai --> sdk --> fastapi
+    fastapi --> sdk --> gemini
+    gemini --> sdk --> fastapi
     fastapi --> app --> proxy --> edge --> device
 ```
 
-DojoPaaSでは、外部からの通信をNginx（80/443）で受け、FastAPIを内部の`127.0.0.1:8000`で動かします。OpenAI APIキーは`server/.env`からサーバーだけが読み込み、CoreS3へは共有トークンだけを設定します。
+DojoPaaSでは、外部からの通信をNginx（80/443）で受け、FastAPIを内部の`127.0.0.1:8000`で動かします。Gemini APIキーは`server/.env`からサーバーだけが読み込み、CoreS3へは共有トークンだけを設定します。
 
 ## ファイル構成
 
@@ -106,10 +106,12 @@ nano server/.env
 最低限、次の値を変更します。
 
 ```dotenv
-OPENAI_API_KEY=実際のOpenAI APIキー
-OPENAI_MODEL=gpt-4o-mini
+GEMINI_API_KEY=実際のGemini APIキー
+GEMINI_MODEL=gemini-3.8-flash
 DEVICE_SHARED_TOKEN=十分に長いランダムな共有トークン
 ```
+
+`GEMINI_API_KEY`はサーバー側の環境変数にだけ設定し、GitやCoreS3へコピーしないでください。Google AI Studio側ではGemini API専用の制限を設定し、本番ではDojoPaaSのSecret機能などを使うことを推奨します。
 
 共有トークンを設定すると、`POST /api/chat`は`X-Device-Token`ヘッダーが一致した場合だけ受け付けます。`GET /health`は疎通確認用に公開のままです。`DEVICE_SHARED_TOKEN`を空にすると認証なしになるため、公開サーバーでは空にしないでください。
 
@@ -248,7 +250,7 @@ const char* SERVER_URL = "https://your-domain.example";
 const char* DEVICE_SHARED_TOKEN = "サーバーと同じ共有トークン";
 ```
 
-OpenAI APIキーはCoreS3へ設定しません。
+Gemini APIキーはCoreS3へ設定しません。
 
 このサンプルは画面表示を省略し、Serial Monitorへ結果を出します。CoreS3へ書き込み後、Serial Monitorを`115200 baud`で開いてください。
 
@@ -273,14 +275,15 @@ AI response:
 ...
 ```
 
-`401`の場合は、CoreS3と`server/.env`の共有トークンが一致しているか確認します。`502`の場合は、DojoPaaSのログとOpenAI APIキー・モデル名を確認します。
+`401`の場合は、CoreS3と`server/.env`の共有トークンが一致しているか確認します。`502`の場合は、DojoPaaSのログとGemini APIキー・モデル名を確認します。
 
 ## セキュリティ上の注意
 
 - `server/.env`はGitへコミットしないでください。`.gitignore`で除外しています。
-- OpenAI APIキーはDojoPaaSだけに置きます。
-- CoreS3には共有トークンだけを置き、OpenAI APIへ直接接続しません。
+- Gemini APIキーはDojoPaaSだけに置きます。
+- CoreS3には共有トークンだけを置き、Gemini APIへ直接接続しません。
 - 公開サーバーでは`DEVICE_SHARED_TOKEN`を必ず設定し、可能ならHTTPSを使います。
+- Gemini APIキーはGemini API専用に制限し、開発用と本番用で分けます。
 - CoreS3サンプルのHTTPS接続はPoCのため証明書検証を省略しています。公開運用前にCA証明書または証明書ピンニングへ変更してください。
 
 共有トークンは第三者へ知られると、その第三者がAPI利用枠を消費できるため、漏えい時はサーバーとCoreS3の両方で変更してください。
@@ -288,8 +291,8 @@ AI response:
 ## 次に音声対応するときの変更箇所
 
 - CoreS3: マイク入力と音声データの取得を追加し、`/api/chat`へ送る入力をテキストから音声アップロードへ変更
-- サーバー: 音声受付用エンドポイントを追加し、OpenAIの音声認識APIを呼び出す処理を追加
-- サーバー: 必要ならテキスト応答を音声合成APIへ渡す処理を追加
+- サーバー: 音声受付用エンドポイントを追加し、Gemini APIの音声対応機能を呼び出す処理を追加
+- サーバー: 必要ならGemini APIまたは別の音声合成APIへ応答を渡す処理を追加
 - CoreS3: 返ってきた音声データを再生
 
-現段階の`/health`、共有トークン、OpenAIキー管理、Uvicorn構成はそのまま再利用できます。
+現段階の`/health`、共有トークン、Gemini APIキー管理、Uvicorn構成はそのまま再利用できます。

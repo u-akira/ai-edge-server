@@ -6,7 +6,8 @@ import secrets
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
-from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
+from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
 
 
@@ -15,15 +16,15 @@ load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ai-edge-server")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
 DEVICE_SHARED_TOKEN = os.getenv("DEVICE_SHARED_TOKEN", "").strip()
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+gemini_client = genai.Client() if GEMINI_API_KEY else None
 
 app = FastAPI(
     title="AI Edge Server",
-    description="A small gateway from edge devices to the OpenAI API.",
+    description="A small gateway from edge devices to the Gemini API.",
     version="0.1.0",
 )
 
@@ -62,29 +63,29 @@ def chat(
 ) -> ChatResponse:
     verify_device_token(x_device_token)
 
-    if openai_client is None:
+    if gemini_client is None:
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY is not configured",
+            detail="GEMINI_API_KEY is not configured",
         )
 
     try:
-        response = openai_client.responses.create(
-            model=OPENAI_MODEL,
-            input=request.message,
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=request.message,
         )
-    except (APIConnectionError, APITimeoutError, APIError) as exc:
-        logger.exception("OpenAI API request failed")
+    except genai_errors.APIError as exc:
+        logger.exception("Gemini API request failed")
         raise HTTPException(
             status_code=502,
-            detail="OpenAI API request failed",
+            detail="Gemini API request failed",
         ) from exc
 
-    answer = response.output_text.strip()
+    answer = (response.text or "").strip()
     if not answer:
         raise HTTPException(
             status_code=502,
-            detail="OpenAI returned an empty response",
+            detail="Gemini returned an empty response",
         )
 
     return ChatResponse(message=answer)

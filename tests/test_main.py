@@ -41,17 +41,17 @@ def test_chat_rejects_missing_or_invalid_device_token(
     assert response.json() == {"detail": "Invalid device token"}
 
 
-def test_chat_returns_openai_response_for_valid_device_token(
+def test_chat_returns_gemini_response_for_valid_device_token(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
 ) -> None:
     monkeypatch.setattr(main, "DEVICE_SHARED_TOKEN", "test-device-token")
-    fake_openai_client = SimpleNamespace(
-        responses=SimpleNamespace(
-            create=lambda **_: SimpleNamespace(output_text="test answer")
+    fake_gemini_client = SimpleNamespace(
+        models=SimpleNamespace(
+            generate_content=lambda **_: SimpleNamespace(text="test answer")
         )
     )
-    monkeypatch.setattr(main, "openai_client", fake_openai_client)
+    monkeypatch.setattr(main, "gemini_client", fake_gemini_client)
 
     response = client.post(
         "/api/chat",
@@ -63,12 +63,12 @@ def test_chat_returns_openai_response_for_valid_device_token(
     assert response.json() == {"message": "test answer"}
 
 
-def test_chat_returns_service_unavailable_without_openai_client(
+def test_chat_returns_service_unavailable_without_gemini_client(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
 ) -> None:
     monkeypatch.setattr(main, "DEVICE_SHARED_TOKEN", "test-device-token")
-    monkeypatch.setattr(main, "openai_client", None)
+    monkeypatch.setattr(main, "gemini_client", None)
 
     response = client.post(
         "/api/chat",
@@ -77,7 +77,7 @@ def test_chat_returns_service_unavailable_without_openai_client(
     )
 
     assert response.status_code == 503
-    assert response.json() == {"detail": "OPENAI_API_KEY is not configured"}
+    assert response.json() == {"detail": "GEMINI_API_KEY is not configured"}
 
 
 def test_chat_rejects_empty_message(

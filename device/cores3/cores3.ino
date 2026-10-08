@@ -11,7 +11,7 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 // Examples: http://192.168.1.20:8000 or https://your-domain.example
 const char* SERVER_URL = "https://your-dojopaas-domain.example";
 
-// Must match DEVICE_SHARED_TOKEN on the server. Do not put the OpenAI key here.
+// Must match DEVICE_SHARED_TOKEN on the server. Do not put the Gemini API key here.
 const char* DEVICE_SHARED_TOKEN = "replace-with-the-same-device-token";
 
 WiFiClient httpClient;
