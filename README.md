@@ -32,7 +32,7 @@ Google AI Studio (Gemini API)
 flowchart LR
     device["M5Stack CoreS3"]
     edge["Internet<br/>HTTP / HTTPS"]
-    proxy["Nginx / TLS終端<br/>80 / 443"]
+    proxy["Tailscale Funnel<br/>HTTPS"]
     app["Uvicorn<br/>127.0.0.1:8000"]
     fastapi["FastAPI<br/>/health<br/>/api/chat"]
     env["server/.env<br/>GEMINI_API_KEY<br/>GEMINI_MODEL<br/>DEVICE_SHARED_TOKEN"]
@@ -46,7 +46,7 @@ flowchart LR
     fastapi --> app --> proxy --> edge --> device
 ```
 
-DojoPaaSでは、外部からの通信をNginx（80/443）で受け、FastAPIを内部の`127.0.0.1:8000`で動かします。Gemini APIキーは`server/.env`からサーバーだけが読み込み、CoreS3へは共有トークンだけを設定します。
+DojoPaaSでは、外部からの通信をTailscale Funnelで受け、FastAPIを内部の`127.0.0.1:8000`で動かします。Gemini APIキーは`server/.env`からサーバーだけが読み込み、CoreS3へは共有トークンだけを設定します。
 
 ## ファイル構成
 
@@ -54,6 +54,7 @@ DojoPaaSでは、外部からの通信をNginx（80/443）で受け、FastAPIを
 ai-edge-server/
 ├── README.md
 ├── .gitignore
+├── tailscale-setup.sh
 ├── server/
 │   ├── main.py
 │   ├── requirements.txt
@@ -71,24 +72,16 @@ ai-edge-server/
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip curl
+sudo apt install -y git python3 python3-venv python3-pip
 ```
 
-### 2. プロジェクトを配置して仮想環境を作る
-
-Gitで取得する場合:
+### 2. Gitでプロジェクトを取得して仮想環境を作る
 
 ```bash
 sudo mkdir -p /opt/ai-edge-server
 sudo chown "$USER":"$USER" /opt/ai-edge-server
 cd /opt/ai-edge-server
 git clone <このリポジトリのURL> .
-```
-
-ファイルを手動で配置する場合は、プロジェクト一式を`/opt/ai-edge-server`へコピーしてから続行します。
-
-```bash
-cd /opt/ai-edge-server
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -169,53 +162,81 @@ sudo systemctl enable --now ai-edge-server.service
 sudo systemctl status ai-edge-server.service
 ```
 
-### 公開URLについて
+### Tailscaleで手動セットアップする場合
 
-CoreS3からアクセスするには、DojoPaaSのドメインまたはIPからFastAPIへ到達できるようにします。
+`tailscale-setup.sh`は、Ubuntu上でTailscale、Tailscale SSH、Funnelをまとめて設定する手動セットアップ用スクリプトです。Tailscaleの認証はブラウザで行います。
 
-- 最小のHTTP確認: Uvicornを`0.0.0.0:8000`で起動し、ポート8000を公開する方法
-- 推奨: NginxやCaddyを80/443で受け、内部の`127.0.0.1:8000`へリバースプロキシする方法
+Funnelはローカルの`127.0.0.1:8000`をインターネットへ公開します。FastAPI側の`DEVICE_SHARED_TOKEN`を設定し、公開して問題ないサービスであることを確認してから実行してください。tailnet内の端末だけに公開したい場合は、Funnelではなく`tailscale serve`を使用してください。
 
-本番やインターネット越しではHTTPSを使用してください。TLS終端をDojoPaaSの機能やNginx/Caddyで行い、CoreS3の`SERVER_URL`を`https://...`にします。
+#### 実行方法
 
-Nginxを使う場合の最小例です。まずDNSの`your-domain.example`がDojoPaaSのIPを向いていることを確認してください。
-
-```bash
-sudo apt install -y nginx
-sudo tee /etc/nginx/sites-available/ai-edge-server >/dev/null <<'EOF'
-server {
-    listen 80;
-    server_name your-domain.example;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-EOF
-sudo ln -s /etc/nginx/sites-available/ai-edge-server /etc/nginx/sites-enabled/ai-edge-server
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-HTTPSを有効にする場合は、ドメインを置き換えてからCertbotを実行します。
+Gitでプロジェクトを取得したUbuntuサーバーのプロジェクトディレクトリで実行します。
 
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.example
+cd /opt/ai-edge-server
+chmod +x tailscale-setup.sh
+sudo ./tailscale-setup.sh
 ```
 
-この構成では外部公開は80/443、FastAPIは内部の`127.0.0.1:8000`だけで待ち受けます。
+スクリプトは次の処理を行います。
+
+1. Tailscaleをインストール（未インストールの場合）
+2. `tailscaled`を起動し、OS起動時に自動起動するよう設定
+3. ブラウザ認証用のURLを表示
+4. Tailscale SSHを有効化
+5. `127.0.0.1:8000`をFunnelで公開
+6. Tailscale IP、接続状態、Funnelの公開URLを表示
+
+認証URLが表示されたら、別のPCのブラウザでURLを開いてサーバーをtailnetへ追加します。初回のFunnel実行では、Funnelの利用許可やHTTPS証明書の発行について確認を求められることがあります。
+
+アプリのポートを変更している場合は、次のように指定します。
+
+```bash
+sudo env FUNNEL_PORT=8080 ./tailscale-setup.sh
+```
+
+SSH接続例に表示するLinuxユーザー名を変更する場合:
+
+```bash
+sudo env SSH_USER=ubuntu ./tailscale-setup.sh
+```
+
+`tailscale set --ssh`はサーバー側でTailscale SSHを有効にするだけで、tailnetのAccess Controlsに接続許可が必要です。接続時は、スクリプトの最後に表示される例を使用します。
+
+```bash
+ssh ubuntu@<表示されたTailscale IPv4アドレス>
+```
+
+Funnelの状態確認:
+
+```bash
+sudo tailscale funnel status
+sudo tailscale status
+```
+
+Funnelを停止して公開設定を解除する場合:
+
+```bash
+sudo tailscale funnel reset
+```
+
+Tailscale SSHを無効にする場合:
+
+```bash
+sudo tailscale set --ssh=false
+```
+
+このスクリプトはsystemdが有効なUbuntuを対象としています。Dockerコンテナ、systemd無効のWSL、その他の非Ubuntu環境では使用しないでください。
 
 ## curlでの確認
+
+`tailscale-setup.sh`の最後に表示されたFunnel URLを使って確認します。以下のURLは実際のFunnel URLへ置き換えてください。
 
 ### `/health`
 
 ```bash
-curl https://your-domain.example/health
+FUNNEL_URL="https://your-machine.your-tailnet.ts.net"
+curl "$FUNNEL_URL/health"
 ```
 
 ### `/api/chat`
@@ -223,7 +244,7 @@ curl https://your-domain.example/health
 共有トークンを設定した場合:
 
 ```bash
-curl https://your-domain.example/api/chat \
+curl "$FUNNEL_URL/api/chat" \
   -H 'Content-Type: application/json' \
   -H 'X-Device-Token: 実際の共有トークン' \
   -d '{"message":"こんにちは"}'
@@ -235,7 +256,7 @@ curl https://your-domain.example/api/chat \
 {"message":"こんにちは！今日は何をしましょうか？"}
 ```
 
-ローカルでUvicornを直接起動している場合は、URLを`http://127.0.0.1:8000`に置き換えます。
+ローカルでUvicornを直接起動している場合は、`FUNNEL_URL`を`http://127.0.0.1:8000`に置き換えます。
 
 ## CoreS3側の設定
 
@@ -246,7 +267,7 @@ curl https://your-domain.example/api/chat \
 ```cpp
 const char* WIFI_SSID = "自宅や現場のWi-Fi SSID";
 const char* WIFI_PASSWORD = "Wi-Fiパスワード";
-const char* SERVER_URL = "https://your-domain.example";
+const char* SERVER_URL = "https://your-machine.your-tailnet.ts.net";
 const char* DEVICE_SHARED_TOKEN = "サーバーと同じ共有トークン";
 ```
 
@@ -282,7 +303,7 @@ AI response:
 - `server/.env`はGitへコミットしないでください。`.gitignore`で除外しています。
 - Gemini APIキーはDojoPaaSだけに置きます。
 - CoreS3には共有トークンだけを置き、Gemini APIへ直接接続しません。
-- 公開サーバーでは`DEVICE_SHARED_TOKEN`を必ず設定し、可能ならHTTPSを使います。
+- Tailscale Funnelはインターネットへ公開されるため、`DEVICE_SHARED_TOKEN`を必ず設定します。
 - Gemini APIキーはGemini API専用に制限し、開発用と本番用で分けます。
 - CoreS3サンプルのHTTPS接続はPoCのため証明書検証を省略しています。公開運用前にCA証明書または証明書ピンニングへ変更してください。
 
