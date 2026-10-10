@@ -61,7 +61,9 @@ ai-edge-server/
 │   └── .env.example
 └── device/
     └── cores3/
-        └── cores3.ino
+        ├── cores3.ino
+        └── touch_chat/
+            └── touch_chat.ino
 ```
 
 ## DojoPaaS側のセットアップ
@@ -260,20 +262,20 @@ curl "$FUNNEL_URL/api/chat" \
 
 ## CoreS3側の設定
 
-1. Arduino IDEにM5Stackのボード定義を追加し、`M5CoreS3`を選択します。
-2. Arduino Library Managerから`ArduinoJson`をインストールします。
+1. Arduino IDEにM5Stackのボード定義を追加し、CoreS3用のボードを選択します。
+2. Arduino Library Managerから`M5Unified`、`ArduinoJson`、`WiFiManager`をインストールします。`M5Unified`の依存ライブラリとして`M5GFX`もインストールされます。
 3. `device/cores3/cores3.ino`を開き、先頭の設定を変更します。
 
 ```cpp
-const char* WIFI_SSID = "自宅や現場のWi-Fi SSID";
-const char* WIFI_PASSWORD = "Wi-Fiパスワード";
 const char* SERVER_URL = "https://your-machine.your-tailnet.ts.net";
 const char* DEVICE_SHARED_TOKEN = "サーバーと同じ共有トークン";
 ```
 
 Gemini APIキーはCoreS3へ設定しません。
 
-このサンプルは画面表示を省略し、Serial Monitorへ結果を出します。CoreS3へ書き込み後、Serial Monitorを`115200 baud`で開いてください。
+Wi-FiのSSIDとパスワードはコードへ埋め込みません。初回起動時、または保存済みWi-Fiへ接続できない場合は、CoreS3が`AI-Edge-CoreS3`という設定用アクセスポイントを開きます。パスワードは`configureme`です。スマートフォンやPCで接続し、`http://192.168.4.1`を開いてWi-Fiを選択・保存してください。設定ポータルは180秒でタイムアウトします。
+
+画面とタッチ操作を使う場合は、`device/cores3/touch_chat/touch_chat.ino`をArduino IDEで開いてください。`SERVER_URL`、`DEVICE_SHARED_TOKEN`、`CHAT_MESSAGE`を設定して書き込み、Serial Monitorを`115200 baud`で開きます。起動時に画面へWi-Fi接続とサーバー疎通の状態が表示され、`SEND CHAT`ボタンをタップすると`CHAT_MESSAGE`の内容を`/api/chat`へ送信します。Geminiの応答本文は画面とSerial Monitorへ表示され、画面は次のタッチまで保持されます。既存の`device/cores3/cores3.ino`は、画面を使わず起動時に一度だけ疎通確認する最小Serial版です。
 
 ## CoreS3からの疎通確認
 
@@ -281,8 +283,9 @@ Gemini APIキーはCoreS3へ設定しません。
 
 1. Wi-Fiへ接続
 2. `GET /health`
-3. `POST /api/chat`へ`{"message":"こんにちは"}`を送信
-4. JSONの`message`をSerialへ表示
+3. CoreS3画面の`SEND CHAT`ボタンをタップ（タッチ版の場合）
+4. `POST /api/chat`へ`CHAT_MESSAGE`の内容を送信
+5. JSONの`message`をSerialへ表示
 
 成功時のログ例:
 
@@ -290,6 +293,7 @@ Gemini APIキーはCoreS3へ設定しません。
 Wi-Fi connected, IP: 192.168.x.x
 GET /health -> 200
 {"status":"ok"}
+Ready. Tap SEND CHAT on the display.
 POST /api/chat -> 200
 {"message":"..."}
 AI response:
