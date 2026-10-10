@@ -2,10 +2,12 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiManager.h>
 
-// Keep all device-specific settings in this block.
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// WiFiManager opens this AP when no saved Wi-Fi credentials are available.
+// Connect to it and open http://192.168.4.1 from a phone or PC.
+const char* CONFIG_PORTAL_SSID = "AI-Edge-CoreS3";
+const char* CONFIG_PORTAL_PASSWORD = "configureme";
 
 // Do not include a trailing slash.
 // Examples: http://192.168.1.20:8000 or https://your-domain.example
@@ -33,20 +35,14 @@ bool beginRequest(HTTPClient& http, const String& url) {
 }
 
 void connectWiFi() {
-  Serial.printf("Connecting to Wi-Fi: %s\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFiManager wifiManager;
+  wifiManager.setConfigPortalTimeout(180);
+  wifiManager.setConnectTimeout(30);
 
-  const unsigned long timeoutMs = 30000;
-  const unsigned long startedAt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < timeoutMs) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi connection failed. Restarting...");
+  Serial.printf("Connecting to saved Wi-Fi or opening %s...\n", CONFIG_PORTAL_SSID);
+  if (!wifiManager.autoConnect(CONFIG_PORTAL_SSID, CONFIG_PORTAL_PASSWORD)) {
+    Serial.println("Wi-Fi setup timed out. Restarting...");
     delay(1000);
     ESP.restart();
   }
