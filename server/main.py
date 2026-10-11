@@ -5,10 +5,16 @@ import os
 import secrets
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket
 from google import genai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
+
+from server.voice_gateway import (
+    VoiceGatewayConfig,
+    VoiceSessionLimiter,
+    handle_voice_websocket,
+)
 
 
 load_dotenv()
@@ -19,6 +25,28 @@ logger = logging.getLogger("ai-edge-server")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
 DEVICE_SHARED_TOKEN = os.getenv("DEVICE_SHARED_TOKEN", "").strip()
+GEMINI_LIVE_MODEL = (
+    os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live").strip()
+    or "gemini-3.8-live"
+)
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+VOICE_GATEWAY_CONFIG = VoiceGatewayConfig(
+    model=GEMINI_LIVE_MODEL,
+    max_session_seconds=env_int("VOICE_MAX_SESSION_SECONDS", 600),
+    max_audio_bytes=env_int("VOICE_MAX_AUDIO_BYTES", 8_000_000),
+    auth_timeout_seconds=env_int("VOICE_AUTH_TIMEOUT_SECONDS", 10),
+)
+VOICE_SESSION_LIMITER = VoiceSessionLimiter(
+    env_int("VOICE_MAX_SESSIONS", 2),
+)
 
 gemini_client = genai.Client() if GEMINI_API_KEY else None
 
@@ -42,6 +70,17 @@ def health() -> dict[str, str]:
     """Return a lightweight process health response."""
 
     return {"status": "ok"}
+
+
+@app.websocket("/ws/voice")
+async def voice(websocket: WebSocket) -> None:
+    await handle_voice_websocket(
+        websocket,
+        gemini_client=gemini_client,
+        expected_device_token=DEVICE_SHARED_TOKEN,
+        config=VOICE_GATEWAY_CONFIG,
+        limiter=VOICE_SESSION_LIMITER,
+    )
 
 
 def verify_device_token(x_device_token: str | None) -> None:

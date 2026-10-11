@@ -1,8 +1,8 @@
 # ai-edge-server
 
-M5Stack CoreS3などの小型デバイスからテキストを受け取り、DojoPaaS上の軽量なFastAPIサーバーを経由してGoogle AI StudioのGemini APIへ問い合わせる最小PoCです。
+M5Stack CoreS3などの小型デバイスから、DojoPaaS上の軽量なFastAPIサーバーを経由してGoogle Geminiへ接続するサンプルです。
 
-音声認識、音声合成、WebSocket、MQTT、データベース、ローカルLLMはまだ使用しません。
+テキストチャットに加えて、Gemini Live APIを使ったPCM音声のリアルタイム会話サンプルを含みます。サーバーは音声認識・音声合成を実行せず、認証、セッション管理、音声ストリームの中継だけを担当します。
 
 ## 認証設計
 
@@ -14,14 +14,12 @@ M5Stack CoreS3などの小型デバイスからテキストを受け取り、Doj
 
 ```text
 M5Stack CoreS3
-    │ HTTP/HTTPS + JSON
-    ▼
+    ├─ HTTP/HTTPS + JSON ────────────────┐
+    └─ WSS + PCM binary ─────────────────┤
+                                         ▼
 DojoPaaS: FastAPI + Uvicorn
-    │ Google Gen AI Python SDK + HTTPS
-    ▼
-Google AI Studio (Gemini API)
-    │ JSON response
-    └──────────────► DojoPaaS ──► CoreS3
+    ├─ /api/chat ─ Google Gen AI SDK ───► Gemini API
+    └─ /ws/voice ─ Gemini Live API ◄────► PCM stream
 ```
 
 `GEMINI_API_KEY`はDojoPaaSにだけ置き、CoreS3には保存しません。
@@ -34,8 +32,8 @@ flowchart LR
     edge["Internet<br/>HTTP / HTTPS"]
     proxy["Tailscale Funnel<br/>HTTPS"]
     app["Uvicorn<br/>127.0.0.1:8000"]
-    fastapi["FastAPI<br/>/health<br/>/api/chat"]
-    env["server/.env<br/>GEMINI_API_KEY<br/>GEMINI_MODEL<br/>DEVICE_SHARED_TOKEN"]
+    fastapi["FastAPI<br/>/health<br/>/api/chat<br/>/ws/voice"]
+    env["server/.env<br/>GEMINI_API_KEY<br/>GEMINI_MODEL<br/>GEMINI_LIVE_MODEL<br/>DEVICE_SHARED_TOKEN"]
     sdk["Google Gen AI Python SDK"]
     gemini["Google AI Studio<br/>(Gemini API)"]
 
@@ -57,13 +55,16 @@ ai-edge-server/
 ├── tailscale-setup.sh
 ├── server/
 │   ├── main.py
+│   ├── voice_gateway.py
 │   ├── requirements.txt
 │   └── .env.example
 └── device/
     └── cores3/
         ├── cores3.ino
-        └── touch_chat/
-            └── touch_chat.ino
+        ├── touch_chat/
+        │   └── touch_chat.ino
+        └── voice_chat/
+            └── voice_chat.ino
 ```
 
 ## DojoPaaS側のセットアップ
@@ -103,12 +104,15 @@ nano server/.env
 ```dotenv
 GEMINI_API_KEY=実際のGemini APIキー
 GEMINI_MODEL=gemini-3.8-flash
+GEMINI_LIVE_MODEL=gemini-3.8-live
 DEVICE_SHARED_TOKEN=十分に長いランダムな共有トークン
 ```
 
 `GEMINI_API_KEY`はサーバー側の環境変数にだけ設定し、GitやCoreS3へコピーしないでください。Google AI Studio側ではGemini API専用の制限を設定し、本番ではDojoPaaSのSecret機能などを使うことを推奨します。
 
-共有トークンを設定すると、`POST /api/chat`は`X-Device-Token`ヘッダーが一致した場合だけ受け付けます。`GET /health`は疎通確認用に公開のままです。`DEVICE_SHARED_TOKEN`を空にすると認証なしになるため、公開サーバーでは空にしないでください。
+共有トークンを設定すると、`POST /api/chat`は`X-Device-Token`ヘッダーが一致した場合だけ受け付けます。`GET /health`は疎通確認用に公開のままです。`/ws/voice`は`DEVICE_SHARED_TOKEN`が未設定の場合も接続を拒否します。公開サーバーでは共有トークンを必ず設定してください。
+
+音声会話では`GEMINI_LIVE_MODEL`を使用します。接続数、1セッションの時間、1セッションの入力音声量は、`VOICE_MAX_SESSIONS`、`VOICE_MAX_SESSION_SECONDS`、`VOICE_MAX_AUDIO_BYTES`で制限できます。
 
 ランダムなトークンの例:
 
@@ -263,7 +267,7 @@ curl "$FUNNEL_URL/api/chat" \
 ## CoreS3側の設定
 
 1. Arduino IDEにM5Stackのボード定義を追加し、CoreS3用のボードを選択します。
-2. Arduino Library Managerから`M5Unified`、`ArduinoJson`、`WiFiManager`をインストールします。`M5Unified`の依存ライブラリとして`M5GFX`もインストールされます。
+2. Arduino Library Managerから`M5Unified`（0.2.19以降）、`ArduinoJson`、`WiFiManager`、`WebSockets`をインストールします。`M5Unified`の依存ライブラリとして`M5GFX`（0.2.26以降）もインストールされます。`WebSockets`はLinks2004/arduinoWebSockets（LGPL-2.1）です。
 3. `device/cores3/cores3.ino`を開き、先頭の設定を変更します。
 
 ```cpp
@@ -276,6 +280,83 @@ Gemini APIキーはCoreS3へ設定しません。
 Wi-FiのSSIDとパスワードはコードへ埋め込みません。初回起動時、または保存済みWi-Fiへ接続できない場合は、CoreS3が`AI-Edge-CoreS3`という設定用アクセスポイントを開きます。パスワードは`configureme`です。スマートフォンやPCで接続し、`http://192.168.4.1`を開いてWi-Fiを選択・保存してください。設定ポータルは180秒でタイムアウトします。
 
 画面とタッチ操作を使う場合は、`device/cores3/touch_chat/touch_chat.ino`をArduino IDEで開いてください。`SERVER_URL`、`DEVICE_SHARED_TOKEN`、`CHAT_MESSAGE`を設定して書き込み、Serial Monitorを`115200 baud`で開きます。起動時に画面へWi-Fi接続とサーバー疎通の状態が表示され、`SEND CHAT`ボタンをタップすると`CHAT_MESSAGE`の内容を`/api/chat`へ送信します。Geminiの応答本文は画面とSerial Monitorへ表示され、画面は次のタッチまで保持されます。既存の`device/cores3/cores3.ino`は、画面を使わず起動時に一度だけ疎通確認する最小Serial版です。
+
+## リアルタイム音声会話
+
+### 構成
+
+`device/cores3/voice_chat/voice_chat.ino`は、CoreS3のマイクから16kHz / 16bit / モノラルPCMを20ms単位で取得し、WSSのバイナリフレームで`/ws/voice`へ送ります。FastAPIはGoogle Gen AI Python SDKのGemini Liveセッションへ中継し、Geminiの24kHz / 16bit / モノラルPCMをCoreS3へ逐次転送します。入力は音声全体を保持せず、送受信キューと再生キューだけを使います。
+
+Gemini Liveの入力・出力形式、イベント仕様、参考リポジトリのライセンス確認は [調査メモ](docs/research/gemini-live-voice.md) にまとめています。AGPL-3.0の参考サーバーからコードはコピーしていません。
+
+### CoreS3の設定と書き込み
+
+`device/cores3/voice_chat/voice_chat.ino`の次の値を設定します。
+
+```cpp
+const char* SERVER_HOST = "your-dojopaas-domain.example";
+constexpr uint16_t SERVER_PORT = 443;
+const char* DEVICE_SHARED_TOKEN = "サーバーと同じ共有トークン";
+const char* TLS_ROOT_CA = R"EOF(
+-----BEGIN CERTIFICATE-----
+サーバー証明書チェーンのCA
+-----END CERTIFICATE-----
+)EOF";
+```
+
+`SERVER_HOST`は`https://`を含めないホスト名です。TLS証明書を検証するため、実際のサーバー証明書チェーンに対応するCAを設定してください。新規音声サンプルでは`setInsecure()`を使用していません。CAが未設定のままではWSS接続できません。
+
+Arduino IDEで`voice_chat.ino`を開き、CoreS3（`M5CoreS3`）を選択して書き込みます。Arduino CLIの場合:
+
+```bash
+arduino-cli lib install WebSockets
+arduino-cli compile --fqbn esp32:esp32:m5stack_cores3 device/cores3/voice_chat
+arduino-cli upload -p <CoreS3のポート> --fqbn esp32:esp32:m5stack_cores3 device/cores3/voice_chat
+```
+
+### 操作方法
+
+1. `TALK`をタップすると録音とPCM送信を開始します。
+2. 話し終えたら`STOP`をタップします。サーバーは`audio_stream_end`をGemini Liveへ通知します。
+3. `Speaking`中は音声を受信しながら再生します。`CANCEL`で応答を中断できます。
+4. 再生キューが空になり、`response.end`を受信すると`TALK`へ戻ります。
+
+マイクとスピーカーは同時に動かさず、再生前にマイクを停止し、再生完了後に再開します。画面更新、録音、WebSocket処理、音声再生は別々に動作するため、タッチ処理を長時間ブロックしません。
+
+### WebSocketプロトコル
+
+接続直後の最初のテキストフレームは、URLクエリではなく次の認証メッセージです。
+
+```json
+{"type":"auth","token":"サーバーと同じ共有トークン"}
+```
+
+| イベント | 方向 | 内容 |
+| --- | --- | --- |
+| `auth` | Device → Server | 接続直後の認証JSON |
+| `session.ready` | Server → Device | Liveセッション準備完了 |
+| `recording.start` | Device → Server | PCM送信開始 |
+| バイナリPCM | Device → Server | 16kHz / 16bit / mono |
+| `recording.stop` | Device → Server | 発話終了、`audio_stream_end`へ変換 |
+| `response.start` | Server → Device | 24kHz / 16bit / monoの応答開始 |
+| バイナリPCM | Server → Device | 応答音声チャンク |
+| `transcript` | Server → Device | 任意の入出力文字起こし |
+| `response.end` | Server → Device | 再生キューへ追加完了 |
+| `response.cancel` | Device → Server | 応答中断 |
+| `error` | Server → Device | エラーコードとメッセージ |
+
+制御メッセージはテキストJSON、音声データはバイナリフレームです。`response.end`はネットワーク受信完了を意味し、CoreS3は再生キューが空になってから次の`TALK`へ戻ります。
+
+### 遅延計測とトラブルシューティング
+
+サーバーは`recording.stop`処理時刻と最初のGemini音声チャンク転送時刻をログへ出します。CoreS3のSerial Monitor（115200 baud）は、録音停止から最初の音声受信・再生開始までを次の形式で出します。
+
+```text
+Latency recording_stop_to_first_audio_received_ms=...
+Latency recording_stop_to_first_audio_played_ms=...
+```
+
+これは実測値であり、1秒前後という目標値を保証するものではありません。`Audio playback buffer underrun/waiting...`が頻発する場合はWi-Fi遅延、サーバー負荷、再生キュー深度を確認してください。WSS認証失敗は共有トークン、TLS接続失敗はホスト名とCA、`gemini_not_configured`はサーバーの`GEMINI_API_KEY`を確認します。
 
 ## CoreS3からの疎通確認
 
@@ -309,15 +390,13 @@ AI response:
 - CoreS3には共有トークンだけを置き、Gemini APIへ直接接続しません。
 - Tailscale Funnelはインターネットへ公開されるため、`DEVICE_SHARED_TOKEN`を必ず設定します。
 - Gemini APIキーはGemini API専用に制限し、開発用と本番用で分けます。
-- CoreS3サンプルのHTTPS接続はPoCのため証明書検証を省略しています。公開運用前にCA証明書または証明書ピンニングへ変更してください。
+- `touch_chat.ino`は既存のテキストPoCとして証明書検証を省略しています。公開運用には使用しないでください。
+- `voice_chat.ino`はWSSでCA検証を行い、`setInsecure()`を使用しません。
 
 共有トークンは第三者へ知られると、その第三者がAPI利用枠を消費できるため、漏えい時はサーバーとCoreS3の両方で変更してください。
 
-## 次に音声対応するときの変更箇所
+## 現状の制約
 
-- CoreS3: マイク入力と音声データの取得を追加し、`/api/chat`へ送る入力をテキストから音声アップロードへ変更
-- サーバー: 音声受付用エンドポイントを追加し、Gemini APIの音声対応機能を呼び出す処理を追加
-- サーバー: 必要ならGemini APIまたは別の音声合成APIへ応答を渡す処理を追加
-- CoreS3: 返ってきた音声データを再生
-
-現段階の`/health`、共有トークン、Gemini APIキー管理、Uvicorn構成はそのまま再利用できます。
+- Gemini Live APIのモデル名や仕様は更新される可能性があるため、サーバーの`GEMINI_LIVE_MODEL`を公式ドキュメントに合わせて変更してください。
+- ハードウェア未接続時はArduinoコンパイルまでを確認し、実機の録音・再生品質や遅延を動作確認済みとは扱いません。
+- 既存の`/health`と`/api/chat`は変更せず、音声機能は`/ws/voice`へ分離しています。
